@@ -212,31 +212,39 @@ public class CustomCategoryGrouper : IAggregateGrouper<Guid>
         // Filter all streams that we already handle
         streamIds = streamIds.Where(x => !x.In(categoryHandledStreamIds)).ToList();
 
-        var streamCategoryEvents = new List<(Guid category, Guid stream)>();
-
+        // For the streams where we don't know the category we need to query the database for it
+        var categoriesForNonAssignedStreamIds = new List<(Guid category, Guid stream)>();
         foreach (var stream in streamIds)
         {
+            // If there is a category that matches it will have a book with the correct id
             var category = session.Query<Category>().Where(x => x.Books.Any(y => y.Id == stream)).Select(x => x.Id).FirstOrDefault();
             if (category != Guid.Empty)
             {
-                streamCategoryEvents.Add((category: category, stream: stream ));
+                categoriesForNonAssignedStreamIds.Add((category: category, stream: stream ));
             }
         }
 
-        var streamsOfInterest = categoryEvents.Select(x => x.stream).ToList();
-
-        var streamsRawEvents = await session.Events.QueryAllRawEvents().Where(x => x.StreamId.In(streamsOfInterest)).ToListAsync();
-        streamsRawEvents = streamsRawEvents.Concat(eventsEnumerated.Where(x => x.StreamId.In(streamsOfInterest))).ToList();
-
+        
+        var streamsToPullCompletely = categoryEvents.Select(x => x.stream).ToList();
+        
+        // Pull in all streams we are interested in, i.e. all that have a CategoryAssignedToBook event in the currently handled streams
+        var streamsRawEvents = await session.Events.QueryAllRawEvents().Where(x => x.StreamId.In(streamsToPullCompletely)).ToListAsync();
+        
+        // Append all events in the currently handled changes
+        streamsRawEvents = streamsRawEvents.Concat(eventsEnumerated.Where(x => x.StreamId.In(streamsToPullCompletely))).ToList();
+        
+        // For each of those streams we completed by fetching it from the Database add all events to the grouping
         foreach (var category in categoryEvents)
         {
             grouping.AddEvents(category.category, streamsRawEvents.Where(x => x.StreamId == category.stream));
         }
 
-        foreach (var category in streamCategoryEvents)
+        // For all other events we do the same thing with the categories we fetched from the database
+        foreach (var category in categoriesForNonAssignedStreamIds)
         {
             grouping.AddEvents(category.category, streamsRawEvents.Where(x => x.StreamId == category.stream));
         }
+        
         Console.WriteLine("Grouper End\n");
     }
 }
